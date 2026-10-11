@@ -62,6 +62,8 @@ LATEST_RELEASE_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/d
 FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
+# Set by --app: secrets arrive on stdin, choices take their defaults, sudo uses SUDO_ASKPASS.
+APP_MODE = False
 _sound_process = None
 
 HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
@@ -230,6 +232,27 @@ def setting_value(name: str, value: str) -> str:
 
 def say(message: str = "") -> None:
     print(message, flush=True)
+
+
+def app_event(name: str, **fields: object) -> None:
+    """Report a setup milestone to the macOS app as one machine-readable line."""
+    if APP_MODE:
+        print("@tinytouch " + json.dumps({"event": name, **fields}), flush=True)
+
+
+def read_secret(prompt: str) -> str:
+    """Read one secret from the terminal, or one stdin line in app mode."""
+    if APP_MODE:
+        line = sys.stdin.readline()
+        if not line.endswith("\n"):
+            raise ToolError("The app did not provide the requested password.")
+        return line[:-1]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass(prompt)
+        except (getpass.GetPassWarning, EOFError) as exc:
+            raise ToolError("Run this command in an interactive terminal.") from exc
 
 
 def terminal_style(text: str, code: str) -> str:
@@ -453,8 +476,14 @@ def authorize_macos() -> None:
         stderr=subprocess.DEVNULL,
     )
     if cached.returncode:
-        say("Authorize macOS in this terminal.")
-        validated = subprocess.run(["sudo", "-v"], check=False)
+        if APP_MODE:
+            if not os.environ.get("SUDO_ASKPASS"):
+                raise ToolError("macOS authorization needs SUDO_ASKPASS in app mode.")
+            app_event("admin_authorization")
+            validated = subprocess.run(["sudo", "-A", "-v"], check=False, stdin=subprocess.DEVNULL)
+        else:
+            say("Authorize macOS in this terminal.")
+            validated = subprocess.run(["sudo", "-v"], check=False)
         if validated.returncode:
             raise ToolError("macOS authorization failed.")
     _sudo_session_ready = True
@@ -463,7 +492,7 @@ def authorize_macos() -> None:
 def prepare_hid_password() -> None:
     """Capture the HID password and unlock Keychain without requiring sudo."""
     global _setup_password
-    entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
+    entered = bytearray(read_secret("Mac password: ").encode("utf-8"))
     if not entered:
         raise ToolError("HID mode requires the password for this Mac.")
     try:
@@ -533,6 +562,8 @@ def notify(title: str, message: str) -> None:
 
 
 def ask(prompt: str) -> str:
+    if APP_MODE:
+        return ""
     try:
         return input(prompt).strip()
     except EOFError as exc:
@@ -888,7 +919,11 @@ def command_repair(args: argparse.Namespace) -> None:
     def password_provider():
         nonlocal owner_password
         if owner_password is None:
-            owner_password = keychain.prompt_keychain_password()
+            if APP_MODE:
+                app_event("keychain_password")
+                owner_password = bytearray(read_secret("Login Keychain password: ").encode("utf-8"))
+            else:
+                owner_password = keychain.prompt_keychain_password()
         return bytearray(owner_password)
 
     try:
@@ -1277,14 +1312,13 @@ def verify_hid_host(port: str, device: dict[str, str], account: str | None = Non
 
 def prompt_hid_password() -> str:
     """Confirm a password without including it in command arguments."""
-    say("Nothing appears as you type. Enter the password twice to catch typing errors.")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", getpass.GetPassWarning)
-        try:
-            first = getpass.getpass("Password: ")
-            second = getpass.getpass("Password again: ")
-        except (getpass.GetPassWarning, EOFError) as exc:
-            raise ToolError("Run this command in an interactive terminal.") from exc
+    if APP_MODE:
+        # The app confirms the password before sending it.
+        first = second = read_secret("Password: ")
+    else:
+        say("Nothing appears as you type. Enter the password twice to catch typing errors.")
+        first = read_secret("Password: ")
+        second = read_secret("Password again: ")
     if not first or first != second:
         raise ToolError("Enter matching passwords. Neither password can be empty.")
     if len(first.encode()) > 160:
@@ -1745,6 +1779,7 @@ def command_setup(args: argparse.Namespace) -> None:
             elif mode == "piv" and device.get("piv") != "ready":
                 say("")
                 say("Setting up PIV certificates. This can take up to 30 seconds.")
+                app_event("piv_creating")
                 paired, available = piv_identities()
                 previous_piv_identities = set(paired + available)
                 unlock(port, reason="create your PIV identity")
@@ -1765,6 +1800,7 @@ def command_setup(args: argparse.Namespace) -> None:
             "Reconnect tinyTouch to apply the new device mode.",
         )
         say(f"Unplug and reconnect tinyTouch to use {mode.upper()} mode.")
+        app_event("reconnect_needed", mode=mode)
         try:
             port = wait_for_reconnect(port)
         except ToolError as exc:
@@ -1773,6 +1809,7 @@ def command_setup(args: argparse.Namespace) -> None:
                 f"Unplug and reconnect tinyTouch, then run 'tinytouch setup --mode {mode}' again."
             ) from exc
         reconnected = True
+        app_event("reconnected", port=port)
     if piv_rescan_needed:
         say("")
         created_piv_identities = wait_for_piv_identities(
@@ -1793,6 +1830,7 @@ def command_setup(args: argparse.Namespace) -> None:
         raise ToolError("PIV setup is incomplete. The identity is not ready.")
     if mode == "hid":
         verify_hid_host(port, device)
+        app_event("installing_helper")
         install_helper()
         if not helper_loaded():
             raise ToolError("HID setup is incomplete. The helper is not loaded.")
@@ -1806,6 +1844,7 @@ def command_setup(args: argparse.Namespace) -> None:
         )
     say("")
     say(f"Ready ({mode.upper()}).")
+    app_event("ready", mode=mode)
 
 
 def command_mode(args: argparse.Namespace) -> None:
@@ -3043,6 +3082,7 @@ def parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", action="store_true", help="Show command and device diagnostics.")
     parser.add_argument("--port", help="Use this USB serial device for commands and the interactive menu.")
+    parser.add_argument("--app", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}",
                         help="Show the CLI version and exit the CLI.")
     parser.set_defaults(func=command_menu)
@@ -3247,7 +3287,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global VERBOSE
+    global VERBOSE, APP_MODE
     if len(sys.argv) > 1 and sys.argv[1] == "_package_test":
         package_test()
         return 0
@@ -3260,6 +3300,7 @@ def main() -> int:
         return 0
     args = parser().parse_args()
     VERBOSE = args.verbose
+    APP_MODE = args.app
     if args.command != "help" and (args.command or (sys.stdin.isatty() and sys.stdout.isatty())):
         show_startup_mark(args.command or "menu")
     try:
