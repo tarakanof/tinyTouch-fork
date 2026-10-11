@@ -472,3 +472,25 @@ class HostRegistrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ComputerListTests(unittest.TestCase):
+    def list_output(self, saved_key):
+        args = cli.parser().parse_args(["computers"])
+        with (
+            mock.patch.object(cli, "choose_port", return_value=PORT),
+            mock.patch.object(cli, "status", return_value=DEVICE),
+            mock.patch.object(cli, "device_account", return_value=ACCOUNT),
+            mock.patch.object(cli, "host_list", return_value=({IDENTIFIER, "0" * 16}, 8)),
+            mock.patch.object(cli, "keychain_get", return_value=saved_key),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            cli.command_computers(args)
+        return output.getvalue().splitlines()
+
+    def test_marks_the_host_paired_with_this_mac(self):
+        self.assertIn(f"  {IDENTIFIER}  (this Mac)", self.list_output(KEY.hex()))
+        self.assertIn("  " + "0" * 16, self.list_output(KEY.hex()))
+
+    def test_lists_plain_ids_without_a_saved_key(self):
+        self.assertNotIn("(this Mac)", "\n".join(self.list_output(None)))

@@ -1294,6 +1294,13 @@ def hid_pairing_key(value: str | None) -> bytes:
     return key
 
 
+def local_host_id(account: str) -> str | None:
+    try:
+        return host_id(hid_pairing_key(keychain_get(PAIRING_SERVICE, account)))
+    except Exception:
+        return None
+
+
 def verify_hid_host(port: str, device: dict[str, str], account: str | None = None) -> None:
     """Check that this Mac can use one of the device's registered hosts."""
     account = account or device_account(port)
@@ -2116,9 +2123,10 @@ def command_computers(args: argparse.Namespace) -> None:
     protocol6(device)
     registered, capacity = host_list(port)
     if args.action == "list":
+        local = local_host_id(device_account(port))
         say(f"HID computers ({len(registered)} of {capacity}):")
         for identifier in sorted(registered):
-            say(f"  {identifier}")
+            say(f"  {identifier}  (this Mac)" if identifier == local else f"  {identifier}")
         return
     if args.remove:
         identifier = args.remove.lower()
