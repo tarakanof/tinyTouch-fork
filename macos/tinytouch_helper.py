@@ -58,6 +58,9 @@ STARTUP_STATUS_TIMEOUT_SECONDS = 30.0
 KEYCHAIN_RETRY_SECONDS = 0.5
 MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
+# Two HID reports per key at the firmware's 100 ms maximum typing delay.
+MAX_SECONDS_PER_KEY = 0.2
+INPUT_SOURCE_SETTLE_SECONDS = 0.1
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 SERIAL_READ_TIMEOUT_SECONDS = 1.0
 LEASE_RECHECK_SECONDS = 0.5
@@ -210,6 +213,13 @@ def _keyboard_layout_libraries():
         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
     )
     hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.restype = ctypes.c_void_p
+    hitoolbox.TISCopyCurrentKeyboardInputSource.restype = ctypes.c_void_p
+    hitoolbox.TISSelectInputSource.argtypes = [ctypes.c_void_p]
+    hitoolbox.TISSelectInputSource.restype = ctypes.c_int32
+    core_foundation.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
+    core_foundation.CFBooleanGetValue.restype = ctypes.c_bool
+    core_foundation.CFEqual.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    core_foundation.CFEqual.restype = ctypes.c_bool
     hitoolbox.TISGetInputSourceProperty.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     hitoolbox.TISGetInputSourceProperty.restype = ctypes.c_void_p
     core_foundation.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
@@ -246,6 +256,107 @@ def current_keyboard_output_map() -> dict[str, str]:
     # Recheck the active source on every touch. Cache by its contents so layout
     # changes (including edits with the same source ID) never use a stale map.
     return _keyboard_output_map(layout_bytes).copy()
+
+
+def _tis_property(hitoolbox, name: str) -> ctypes.c_void_p:
+    return ctypes.c_void_p.in_dll(hitoolbox, name)
+
+
+def _selected_input_source() -> int | None:
+    """Return a retained reference to the input source macOS has selected now.
+
+    TISCopyCurrentKeyboardInputSource caches the source per process and refreshes
+    it only from main run loop notifications, which this helper never runs.
+    """
+    hitoolbox, core_foundation, _ = _keyboard_layout_libraries()
+    cf = core_foundation
+    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    cf.CFPreferencesAppSynchronize.argtypes = [ctypes.c_void_p]
+    cf.CFPreferencesCopyAppValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFPreferencesCopyAppValue.restype = ctypes.c_void_p
+    cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFDictionaryCreate.restype = ctypes.c_void_p
+    cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+    cf.CFArrayGetCount.restype = ctypes.c_long
+    cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+    cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+    cf.CFRetain.argtypes = [ctypes.c_void_p]
+    cf.CFRetain.restype = ctypes.c_void_p
+    hitoolbox.TISCreateInputSourceList.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+    hitoolbox.TISCreateInputSourceList.restype = ctypes.c_void_p
+    utf8 = 0x08000100
+    owned = []
+    try:
+        domain = cf.CFStringCreateWithCString(None, b"com.apple.HIToolbox", utf8)
+        key = cf.CFStringCreateWithCString(None, b"AppleCurrentKeyboardLayoutInputSourceID", utf8)
+        owned += [domain, key]
+        cf.CFPreferencesAppSynchronize(domain)
+        identifier = cf.CFPreferencesCopyAppValue(key, domain)
+        if not identifier:
+            return hitoolbox.TISCopyCurrentKeyboardInputSource()
+        owned.append(identifier)
+        keys = (ctypes.c_void_p * 1)(_tis_property(hitoolbox, "kTISPropertyInputSourceID").value)
+        values = (ctypes.c_void_p * 1)(identifier)
+        query = cf.CFDictionaryCreate(
+            None, keys, values, 1,
+            ctypes.addressof(ctypes.c_void_p.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+            ctypes.addressof(ctypes.c_void_p.in_dll(cf, "kCFTypeDictionaryValueCallBacks")),
+        )
+        owned.append(query)
+        sources = hitoolbox.TISCreateInputSourceList(query, False)
+        if not sources:
+            return hitoolbox.TISCopyCurrentKeyboardInputSource()
+        owned.append(sources)
+        if cf.CFArrayGetCount(sources) == 0:
+            return hitoolbox.TISCopyCurrentKeyboardInputSource()
+        return cf.CFRetain(cf.CFArrayGetValueAtIndex(sources, 0))
+    finally:
+        for value in owned:
+            if value:
+                cf.CFRelease(value)
+
+
+def switch_to_ascii_input_source(typed_keys: int) -> threading.Timer | None:
+    """Select a Latin input source while tinyTouch types, then restore the original.
+
+    Key codes from the device are read through the focused app's input source, so a
+    non-Latin source such as Russian would turn the password into Cyrillic.
+    """
+    hitoolbox, core_foundation, _ = _keyboard_layout_libraries()
+    ascii_capable = _tis_property(hitoolbox, "kTISPropertyInputSourceIsASCIICapable")
+    original = _selected_input_source()
+    if not original:
+        return None
+    flag = hitoolbox.TISGetInputSourceProperty(original, ascii_capable)
+    if flag and core_foundation.CFBooleanGetValue(flag):
+        core_foundation.CFRelease(original)
+        return None
+    latin = hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
+    if not latin or hitoolbox.TISSelectInputSource(latin) != 0:
+        diagnostic("keyboard.input_source_switch_failed", level="warning")
+        core_foundation.CFRelease(original)
+        if latin:
+            core_foundation.CFRelease(latin)
+        return None
+    time.sleep(INPUT_SOURCE_SETTLE_SECONDS)
+
+    def restore() -> None:
+        current = _selected_input_source()
+        try:
+            # Leave a source the person picked while tinyTouch was typing.
+            if current and core_foundation.CFEqual(current, latin):
+                hitoolbox.TISSelectInputSource(original)
+        finally:
+            for source in (current, latin, original):
+                if source:
+                    core_foundation.CFRelease(source)
+
+    timer = threading.Timer(typed_keys * MAX_SECONDS_PER_KEY + 0.5, restore)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 @lru_cache(maxsize=8)
@@ -772,6 +883,13 @@ def serve_port(
                                          device_id=device_id, keyboard_map=keyboard_map,
                                          record_nonce=False)
                     if reply:
+                        try:
+                            # Dead keys can need two key presses per character, plus Enter.
+                            switch_to_ascii_input_source(
+                                2 * max(len(value) for value in password.values()) + 1
+                            )
+                        except (OSError, AttributeError, ValueError):
+                            diagnostic("keyboard.input_source_switch_failed", level="warning")
                         ser.write(reply.encode("ascii"))
                         remember_nonce(state, line.split()[1], device_id)
                         diagnostic(

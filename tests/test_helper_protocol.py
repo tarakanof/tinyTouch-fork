@@ -205,7 +205,54 @@ class KeyboardMapCacheTests(unittest.TestCase):
         foundation.CFRelease.assert_called_once_with(123)
 
 
+class InputSourceSwitchTests(unittest.TestCase):
+    RUSSIAN, LATIN = 1, 2
+
+    def libraries(self, current, ascii_capable):
+        hitoolbox, foundation = mock.Mock(), mock.Mock()
+        self.current = current
+        self.enterContext(mock.patch.object(helper, "_selected_input_source", side_effect=lambda: self.current))
+        hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.return_value = self.LATIN
+        hitoolbox.TISGetInputSourceProperty.return_value = 99
+        foundation.CFBooleanGetValue.return_value = ascii_capable
+        foundation.CFEqual.side_effect = lambda a, b: a == b
+
+        def select(source):
+            self.current = source
+            return 0
+
+        hitoolbox.TISSelectInputSource.side_effect = select
+        self.enterContext(mock.patch.object(helper, "_keyboard_layout_libraries", return_value=(hitoolbox, foundation, None)))
+        self.enterContext(mock.patch.object(helper, "_tis_property", return_value=None))
+        self.enterContext(mock.patch.object(helper, "INPUT_SOURCE_SETTLE_SECONDS", 0))
+        return hitoolbox
+
+    def test_latin_source_is_left_alone(self):
+        hitoolbox = self.libraries(self.LATIN, ascii_capable=True)
+        self.assertIsNone(helper.switch_to_ascii_input_source(10))
+        hitoolbox.TISSelectInputSource.assert_not_called()
+
+    def test_non_latin_source_is_switched_for_typing_and_restored(self):
+        self.libraries(self.RUSSIAN, ascii_capable=False)
+        timer = helper.switch_to_ascii_input_source(10)
+        self.assertEqual(self.current, self.LATIN)
+        timer.cancel()
+        timer.function()
+        self.assertEqual(self.current, self.RUSSIAN)
+
+    def test_source_chosen_during_typing_is_kept(self):
+        self.libraries(self.RUSSIAN, ascii_capable=False)
+        timer = helper.switch_to_ascii_input_source(10)
+        timer.cancel()
+        self.current = 3
+        timer.function()
+        self.assertEqual(self.current, 3)
+
+
 class SerialDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(helper, "switch_to_ascii_input_source"))
+
     def test_fragmented_authenticated_requests_reach_the_wire_and_secrets_are_wiped(self):
         for version in (1, 2):
             with self.subTest(version=version):
