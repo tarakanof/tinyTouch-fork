@@ -1148,6 +1148,47 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(calls, ["SET MODE HID"])
         self.assertFalse(any("RESET" in command or "RECONNECT" in command for command in calls))
 
+    def reconnect_after(self, *scans):
+        with (
+            mock.patch.object(cli, "detect_ports", side_effect=[list(scan) for scan in scans]),
+            mock.patch.object(cli.time, "sleep"),
+            mock.patch.object(cli, "say"),
+        ):
+            return cli.wait_for_reconnect("/dev/cu.usbmodem1")
+
+    def test_reconnect_wait_ignores_another_serial_device(self):
+        other = "/dev/cu.usbmodemMONITOR"
+        port = self.reconnect_after(
+            ["/dev/cu.usbmodem1", other], [other], [other], [other, "/dev/cu.usbmodem1"]
+        )
+        self.assertEqual(port, "/dev/cu.usbmodem1")
+
+    def test_reconnect_wait_follows_the_device_to_a_new_name(self):
+        other = "/dev/cu.usbmodemMONITOR"
+        self.assertEqual(
+            self.reconnect_after(
+                ["/dev/cu.usbmodem1", other], [other], [other, "/dev/cu.usbmodem2"]
+            ),
+            "/dev/cu.usbmodem2",
+        )
+        self.assertEqual(
+            self.reconnect_after(["/dev/cu.usbmodem1"], [], ["/dev/cu.usbmodem2"]),
+            "/dev/cu.usbmodem2",
+        )
+
+    def test_unlock_retries_when_the_port_is_briefly_unavailable(self):
+        with (
+            mock.patch.object(
+                cli,
+                "foreground_session",
+                side_effect=[OSError(6, "Device not configured"), nullcontext()],
+            ),
+            mock.patch.object(cli, "exchange_serial", return_value=["OK AUTH"]) as exchange,
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            cli.unlock("/dev/cu.TT-1234")
+        exchange.assert_called_once()
+
     def test_ota_staging_uses_inactive_slot_and_requires_power_cycle(self):
         writes = []
 

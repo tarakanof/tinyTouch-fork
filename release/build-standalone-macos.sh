@@ -21,9 +21,13 @@ fi
 # environment's bin directory so source distributions can invoke them.
 export PATH="$venv_dir/bin:$PATH"
 
-"$venv_python" -m pip install -q --require-hashes \
+# The requirements are pinned by hash, so fetch them from PyPI whatever index
+# this machine's pip is configured for. A private index would fail or stall here.
+pip_index="${TINYTOUCH_PIP_INDEX_URL:-https://pypi.org/simple}"
+"$venv_python" -m pip install -q --isolated --index-url "$pip_index" --require-hashes \
   -r "$project_dir/macos/requirements-bootstrap.txt"
-"$venv_python" -m pip install -q --no-build-isolation --require-hashes \
+"$venv_python" -m pip install -q --isolated --index-url "$pip_index" \
+  --no-build-isolation --require-hashes \
   -r "$project_dir/macos/requirements-release.txt"
 
 rm -rf "$build_dir"

@@ -617,17 +617,22 @@ def current_port(port: str) -> str:
 def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
     """Wait for a physical disconnect followed by a USB serial reconnect."""
     deadline = time.monotonic() + timeout
-    disconnected = False
+    # The USB serial devices still connected once tinyTouch is gone. They are
+    # other hardware, so only a port that appears later can be tinyTouch.
+    others: set[str] | None = None
     while time.monotonic() < deadline:
         ports = detect_ports()
-        if not disconnected:
+        if others is None:
             if port not in ports:
-                disconnected = True
+                others = set(ports)
                 say("The device disconnected. Waiting for it to reconnect.")
         elif port in ports:
             return port
-        elif len(ports) == 1:
-            return ports[0]
+        else:
+            # macOS can give the device a new name when it re-enumerates.
+            appeared = [item for item in ports if item not in others]
+            if len(appeared) == 1:
+                return appeared[0]
         time.sleep(0.1)
     raise ToolError("Timed out waiting for tinyTouch to disconnect and reconnect.")
 
