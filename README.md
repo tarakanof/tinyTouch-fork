@@ -1,3 +1,24 @@
+# tinyTouch for macOS
+
+This repository is [ZimengXiong/tinyTouch](https://github.com/ZimengXiong/tinyTouch)
+plus a native macOS companion app.
+
+- **The app** is in [`macos/app`](macos/app/README.md). It does first-run setup,
+  fingerprints, lighting, sign-in mode, registered computers and a menu bar status
+  item, without opening Terminal. It is not part of upstream.
+- **The hardware, firmware and CLI** are upstream's work by Zimeng Xiong. This
+  repository does not change the firmware. Flash and update the device from
+  upstream's [Flash center](https://docs.tinytouch.dev/flash) and releases.
+- **The CLI and helper** carry a few changes the app relies on. They are offered
+  upstream as pull requests.
+
+There is no prebuilt download yet. To build the app, follow
+[`macos/app/README.md`](macos/app/README.md).
+
+Everything below is upstream's README.
+
+---
+
 ## interested in preassembled versions? pre order now:
 [tinytouch.dev](https://tinytouch.dev)
 
