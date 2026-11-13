@@ -1050,6 +1050,17 @@ class ProtocolSixTests(unittest.TestCase):
             "Touch the device with a registered finger to unlock configuration.",
         )
 
+    def test_unlock_retries_when_the_port_was_briefly_unavailable(self):
+        unavailable = cli.ToolError(
+            "The tinyTouch USB serial port became unavailable when this command started. Please try again in a moment."
+        )
+        with (
+            mock.patch.object(cli, "serial_command", side_effect=[unavailable, ["OK AUTH"]]) as command,
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            cli.unlock("/dev/cu.TT-1234")
+        self.assertEqual(command.call_count, 2)
+
     def test_hid_host_list_preserves_eight_host_capacity(self):
         with mock.patch.object(
             cli, "serial_command",

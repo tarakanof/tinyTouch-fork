@@ -431,6 +431,7 @@ latest stable release.
 tinytouch config [show] [--json] [--port PATH]
 tinytouch config list [--json]
 tinytouch config NAME [VALUE] [--json] [--port PATH]
+tinytouch config NAME VALUE NAME VALUE ... [--port PATH]
 tinytouch settings ...
 ```
 
@@ -439,6 +440,10 @@ tinytouch settings ...
 device connection. With a name, reads that saved setting; with a value, writes
 it after fingerprint approval. `--json` applies to reads and `list`.
 
+Several `NAME VALUE` pairs are written with one fingerprint approval. Every
+value is checked before the touch is asked for. `mode` and `led` have their own
+device checks, so change each of those on its own.
+
 ```sh
 tinytouch config
 tinytouch config list
@@ -446,6 +451,7 @@ tinytouch config --json
 tinytouch config typing_delay_ms
 tinytouch config typing_delay_ms 7
 tinytouch config submit_enter off
+tinytouch config led_idle_color purple led_idle_effect breathe
 tinytouch config touch_cooldown_ms 800
 tinytouch config led_feedback_ms 200
 tinytouch config piv_auto_type off

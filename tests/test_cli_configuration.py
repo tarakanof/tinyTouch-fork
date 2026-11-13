@@ -114,6 +114,28 @@ class ConfigurationTests(unittest.TestCase):
         self.command.assert_called_once_with("port", "SET TYPE_DELAY 7", timeout=5)
         self.verify.assert_not_called()
 
+    def test_several_settings_are_written_with_one_approval(self):
+        self.mock_device()
+        self.invoke(["config", "led_idle_color", "purple", "led_idle_effect", "breathe", "typing_delay_ms", "7"])
+        self.unlock.assert_called_once()
+        self.assertEqual(
+            [call.args[1] for call in self.command.call_args_list],
+            ["SET LED_IDLE_COLOR 5", "SET LED_IDLE_EFFECT 1", "SET TYPE_DELAY 7"],
+        )
+
+    def test_several_settings_reject_bad_input_before_authorization(self):
+        self.mock_device()
+        for argv, message in (
+            (["config", "led_idle_color", "purple", "led_idle_effect"], "Give each setting a value"),
+            (["config", "led_idle_color", "purple", "led", "off"], "Change led on its own"),
+            (["config", "typing_delay_ms", "7", "mode", "hid"], "Change mode on its own"),
+            (["config", "typing_delay_ms", "7", "led_idle_color", "plaid"], "Invalid value 'plaid'"),
+        ):
+            with self.subTest(argv=argv), self.assertRaisesRegex(cli.ToolError, message):
+                self.invoke(argv)
+        self.unlock.assert_not_called()
+        self.command.assert_not_called()
+
     def test_missing_readback_is_not_replaced_by_a_default(self):
         self.mock_device({"protocol": "6", "firmware": "0.1.30"})
         with self.assertRaisesRegex(cli.ToolError, "does not report typing_delay_ms"):

@@ -1211,12 +1211,7 @@ def unlock(
                 explain_piv_pin()
             return
         except ToolError as exc:
-            if (
-                "The USB serial port became unavailable when this command started."
-                not in str(exc)
-            ):
-                raise
-            if time.monotonic() >= deadline:
+            if "USB serial port became unavailable" not in str(exc) or time.monotonic() >= deadline:
                 raise
             time.sleep(0.25)
 
@@ -2005,6 +2000,20 @@ def command_config(args: argparse.Namespace) -> None:
         show_settings(args)
         return
     name = setting_name(args.name)
+    more = getattr(args, "more", None) or []
+    if more:
+        # Several settings are written in one session, so one touch approves all of them.
+        if len(more) % 2:
+            raise ToolError("Give each setting a value. Example: tinytouch config led_idle_color purple led_idle_effect breathe")
+        values = {name: args.value}
+        for other, value in zip(more[::2], more[1::2]):
+            values[setting_name(other)] = value
+        for special in ("mode", "led"):
+            if special in values:
+                raise ToolError(f"Change {special} on its own: tinytouch config {special} VALUE")
+        apply_settings(args.port, values)
+        say("Updated " + ", ".join(f"{key} to {SETTINGS[key].decode(setting_value(key, value))}" for key, value in values.items()) + ".")
+        return
     if args.value is None:
         port = choose_port(args.port)
         with foreground_session(port):
@@ -3164,10 +3173,11 @@ def parser() -> argparse.ArgumentParser:
         f"  {name}: {spec.allowed()}; {spec.default}\n    {spec.description}" for name, spec in SETTINGS.items())
     config = sub.add_parser("config", aliases=["settings"], help="Show, list, read, or change the device settings.",
                             formatter_class=argparse.RawDescriptionHelpFormatter,
-                            description="With no arguments, show the current settings. Use 'list' to list settings without connecting a device. Use NAME to read a setting. Use NAME VALUE to change it.",
-                            epilog=config_help + "\n\nExamples:\n  tinytouch config --json\n  tinytouch config led_idle_color purple\n  tinytouch config submit_enter off\n  tinytouch config piv_auto_type off\n  tinytouch config typing_delay_ms 7")
+                            description="With no arguments, show the current settings. Use 'list' to list settings without connecting a device. Use NAME to read a setting. Use NAME VALUE to change it. Repeat NAME VALUE to change several settings with one touch.",
+                            epilog=config_help + "\n\nExamples:\n  tinytouch config --json\n  tinytouch config led_idle_color purple\n  tinytouch config submit_enter off\n  tinytouch config piv_auto_type off\n  tinytouch config typing_delay_ms 7\n  tinytouch config led_idle_color purple led_idle_effect breathe")
     config.add_argument("name", nargs="?", help="Select a setting name, 'show', or 'list'.")
     config.add_argument("value", nargs="?", help="Set a new value. Omit the value to read the current setting.")
+    config.add_argument("more", nargs="*", metavar="NAME VALUE", help="Change more settings with the same approval.")
     config.add_argument("--json", action="store_true", help="Show current values as JSON.")
     config.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     config.set_defaults(func=command_config)
